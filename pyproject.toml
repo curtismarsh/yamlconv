@@ -1,0 +1,17 @@
+[project]
+name = "yamlconv"
+version = "0.1.0"
+description = "Convert between nested YAML and flat properties-style config files."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+
+[project.scripts]
+yamlconv = "yamlconv.cli:main"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["yamlconv*"]
