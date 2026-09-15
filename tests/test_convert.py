@@ -61,6 +61,50 @@ class YamlFormatTests(unittest.TestCase):
         self.assertEqual(parse_yaml("tags: [web, api]\n"), {"tags": ["web", "api"]})
 
 
+class BlockScalarTests(unittest.TestCase):
+    def test_literal_block_scalar_default_chomping(self):
+        text = "message: |\n  line one\n  line two\n"
+        self.assertEqual(parse_yaml(text), {"message": "line one\nline two\n"})
+
+    def test_literal_block_scalar_strip_chomping(self):
+        text = "message: |-\n  line one\n  line two\nafter: 1\n"
+        self.assertEqual(
+            parse_yaml(text), {"message": "line one\nline two", "after": 1}
+        )
+
+    def test_literal_block_scalar_keep_chomping(self):
+        text = "message: |+\n  line one\n\n\nafter: value\n"
+        self.assertEqual(
+            parse_yaml(text), {"message": "line one\n\n\n", "after": "value"}
+        )
+
+    def test_folded_block_scalar(self):
+        text = "message: >\n  line one\n  line two\n"
+        self.assertEqual(parse_yaml(text), {"message": "line one line two\n"})
+
+    def test_block_scalar_in_sequence(self):
+        text = "items:\n  - |\n    a\n    b\n  - plain\n"
+        self.assertEqual(parse_yaml(text), {"items": ["a\nb\n", "plain"]})
+
+    def test_block_scalar_ignores_hash_as_content(self):
+        text = "message: |\n  keep # this\n"
+        self.assertEqual(parse_yaml(text), {"message": "keep # this\n"})
+
+    def test_dump_multiline_string_round_trips_with_trailing_newline(self):
+        data = {"description": "first line\nsecond line\n"}
+        dumped = dump_yaml(data)
+        self.assertEqual(
+            dumped, "description: |\n  first line\n  second line\n"
+        )
+        self.assertEqual(parse_yaml(dumped), data)
+
+    def test_dump_multiline_string_round_trips_without_trailing_newline(self):
+        data = {"note": "abc\ndef"}
+        dumped = dump_yaml(data)
+        self.assertEqual(dumped, "note: |-\n  abc\n  def\n")
+        self.assertEqual(parse_yaml(dumped), data)
+
+
 class ConversionPipelineTests(unittest.TestCase):
     def test_yaml_to_properties_and_back(self):
         yaml_text = "server:\n  host: localhost\n  port: 8080\n"

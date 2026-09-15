@@ -1,23 +1,27 @@
 """A parser and dumper for a practical subset of YAML.
 
 Supports block mappings, block sequences, flow lists/maps ([a, b],
-{a: b}), quoted and plain scalars, and comments. Does not support
-anchors, aliases, multi-document streams, or block scalars (| and >).
-That subset covers the vast majority of hand-written config files;
-anything fancier should go through a real YAML library.
+{a: b}), quoted and plain scalars, comments, and literal/folded block
+scalars (| and >, with -/+ chomping indicators). Does not support
+anchors, aliases, multi-document streams, or explicit block scalar
+indentation indicators. That subset covers the vast majority of
+hand-written config files; anything fancier should go through a real
+YAML library.
 """
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 
 def parse_yaml(text: str) -> Any:
     """Parse a YAML subset into plain dict/list/scalar values. Pure function."""
-    lines = _preprocess(text)
+    raw_lines = text.splitlines()
+    lines = _preprocess(raw_lines)
     if not lines:
         return None
-    value, _ = _parse_block(lines, 0, lines[0][0])
+    value, _ = _parse_block(lines, 0, lines[0][0], raw_lines)
     return value
 
 
@@ -34,14 +38,19 @@ def dump_yaml(data: Any) -> str:
 # ---- parsing --------------------------------------------------------------
 
 
-def _preprocess(text: str) -> list[tuple[int, str]]:
+def _preprocess(raw_lines: list[str]) -> list[tuple[int, str, int]]:
+    """Strip comments and blank lines, keeping each entry's original line number.
+
+    The line number lets block scalar consumption jump back into the raw,
+    comment-preserving text once it hits a `|` or `>` indicator.
+    """
     result = []
-    for raw_line in text.splitlines():
+    for idx, raw_line in enumerate(raw_lines):
         stripped = _strip_comment(raw_line)
         if not stripped.strip():
             continue
         indent = len(stripped) - len(stripped.lstrip(" "))
-        result.append((indent, stripped.strip()))
+        result.append((indent, stripped.strip(), idx))
     return result
 
 
@@ -75,13 +84,27 @@ def _is_seq_item(content: str) -> bool:
     return content == "-" or content.startswith("- ")
 
 
-def _parse_block(lines: list[tuple[int, str]], start: int, indent: int):
+_BLOCK_SCALAR_RE = re.compile(r"^([|>])([+-]?)$")
+
+
+def _block_scalar_style(rest: str) -> tuple[str, str] | None:
+    match = _BLOCK_SCALAR_RE.match(rest)
+    if not match:
+        return None
+    return match.group(1), match.group(2)
+
+
+def _parse_block(
+    lines: list[tuple[int, str, int]], start: int, indent: int, raw_lines: list[str]
+):
     if _is_seq_item(lines[start][1]):
-        return _parse_sequence(lines, start, indent)
-    return _parse_mapping(lines, start, indent)
+        return _parse_sequence(lines, start, indent, raw_lines)
+    return _parse_mapping(lines, start, indent, raw_lines)
 
 
-def _parse_mapping(lines: list[tuple[int, str]], start: int, indent: int):
+def _parse_mapping(
+    lines: list[tuple[int, str, int]], start: int, indent: int, raw_lines: list[str]
+):
     result: dict[str, Any] = {}
     i = start
     while i < len(lines) and lines[i][0] == indent:
@@ -91,9 +114,12 @@ def _parse_mapping(lines: list[tuple[int, str]], start: int, indent: int):
             raise ValueError(f"expected 'key: value' at: {content!r}")
         key = _dequote(content[:colon].strip())
         rest = content[colon + 1 :].strip()
-        if rest == "":
+        style = _block_scalar_style(rest)
+        if style is not None:
+            value, i = _parse_block_scalar(raw_lines, lines, i, indent, style)
+        elif rest == "":
             if i + 1 < len(lines) and lines[i + 1][0] > indent:
-                value, i = _parse_block(lines, i + 1, lines[i + 1][0])
+                value, i = _parse_block(lines, i + 1, lines[i + 1][0], raw_lines)
             else:
                 value = None
                 i += 1
@@ -104,33 +130,119 @@ def _parse_mapping(lines: list[tuple[int, str]], start: int, indent: int):
     return result, i
 
 
-def _parse_sequence(lines: list[tuple[int, str]], start: int, indent: int):
+def _parse_sequence(
+    lines: list[tuple[int, str, int]], start: int, indent: int, raw_lines: list[str]
+):
     items: list[Any] = []
     i = start
     while i < len(lines) and lines[i][0] == indent and _is_seq_item(lines[i][1]):
         content = lines[i][1]
         rest = content[1:].strip()
-        if rest == "":
+        style = _block_scalar_style(rest)
+        if style is not None:
+            value, i = _parse_block_scalar(raw_lines, lines, i, indent, style)
+        elif rest == "":
             if i + 1 < len(lines) and lines[i + 1][0] > indent:
-                value, i = _parse_block(lines, i + 1, lines[i + 1][0])
+                value, i = _parse_block(lines, i + 1, lines[i + 1][0], raw_lines)
             else:
                 value = None
                 i += 1
         elif _find_colon(rest) != -1:
             # "- key: value" starts a mapping; deeper-indented lines continue it.
             virtual_indent = indent + (len(content) - len(rest))
-            virtual_lines = [(virtual_indent, rest)]
+            virtual_lines = [(virtual_indent, rest, lines[i][2])]
             j = i + 1
             while j < len(lines) and lines[j][0] > indent:
                 virtual_lines.append(lines[j])
                 j += 1
-            value, _consumed = _parse_mapping(virtual_lines, 0, virtual_indent)
+            value, _consumed = _parse_mapping(virtual_lines, 0, virtual_indent, raw_lines)
             i = j
         else:
             value = _parse_scalar(rest)
             i += 1
         items.append(value)
     return items, i
+
+
+def _parse_block_scalar(
+    raw_lines: list[str],
+    lines: list[tuple[int, str, int]],
+    i: int,
+    parent_indent: int,
+    style: tuple[str, str],
+):
+    """Consume a `|`/`>` block scalar starting after `lines[i]`.
+
+    Block scalar bodies are read straight from the raw source lines rather
+    than the comment-stripped, blank-line-skipped `lines` list, since a `#`
+    or a blank line inside the block is content, not syntax. Once the body
+    is collected we skip `lines` forward past whatever raw lines it covered.
+    """
+    char, chomp = style
+    start_raw_idx = lines[i][2]
+    n = len(raw_lines)
+    j = start_raw_idx + 1
+    block_indent: int | None = None
+    content_lines: list[str] = []
+    last_raw_idx = start_raw_idx
+    while j < n:
+        raw = raw_lines[j]
+        if raw.strip() == "":
+            content_lines.append("")
+            last_raw_idx = j
+            j += 1
+            continue
+        cur_indent = len(raw) - len(raw.lstrip(" "))
+        if block_indent is None:
+            if cur_indent <= parent_indent:
+                break
+            block_indent = cur_indent
+        if cur_indent < block_indent:
+            break
+        content_lines.append(raw[block_indent:])
+        last_raw_idx = j
+        j += 1
+
+    trailing_blanks = 0
+    while content_lines and content_lines[-1] == "":
+        content_lines.pop()
+        trailing_blanks += 1
+
+    body = "\n".join(content_lines) if char == "|" else _fold_lines(content_lines)
+
+    if not content_lines and not trailing_blanks:
+        value = ""
+    elif chomp == "-":
+        value = body
+    elif chomp == "+":
+        value = body + "\n" * (trailing_blanks + 1)
+    else:
+        value = body + "\n"
+
+    next_i = i + 1
+    while next_i < len(lines) and lines[next_i][2] <= last_raw_idx:
+        next_i += 1
+    return value, next_i
+
+
+def _fold_lines(lines: list[str]) -> str:
+    if not lines:
+        return ""
+    parts: list[str] = [lines[0]]
+    blank_run = 0
+    for line in lines[1:]:
+        if line == "":
+            blank_run += 1
+            continue
+        if blank_run:
+            parts.append("\n" * blank_run)
+            blank_run = 0
+        else:
+            parts.append(" ")
+        parts.append(line)
+    if blank_run:
+        parts.append("\n" * blank_run)
+    return "".join(parts)
 
 
 def _split_flow(inner: str) -> list[str]:
@@ -247,8 +359,33 @@ def _dump_string(s: str) -> str:
     return s
 
 
+def _dump_block_scalar(value: str, pad: str) -> list[str]:
+    """Render a multi-line string as a literal (`|`) block scalar.
+
+    A raw newline can't survive inside a quoted flow scalar, so any string
+    containing "\\n" is written as a block instead of going through
+    _dump_string.
+    """
+    if value.endswith("\n"):
+        stripped = value.rstrip("\n")
+        trailing = len(value) - len(stripped)
+        if trailing > 1:
+            indicator = "+"
+            body_lines = stripped.split("\n") + [""] * (trailing - 1)
+        else:
+            indicator = ""
+            body_lines = stripped.split("\n")
+    else:
+        indicator = "-"
+        body_lines = value.split("\n")
+    header = f"|{indicator}"
+    content = [f"{pad}{line}" if line else "" for line in body_lines]
+    return [header, *content]
+
+
 def _dump_value(data: Any, level: int) -> list[str]:
     pad = "  " * level
+    child_pad = "  " * (level + 1)
     lines: list[str] = []
     if isinstance(data, dict):
         for key, value in data.items():
@@ -263,6 +400,10 @@ def _dump_value(data: Any, level: int) -> list[str]:
                 lines.append(f"{pad}{key_str}: {{}}")
             elif isinstance(value, list):
                 lines.append(f"{pad}{key_str}: []")
+            elif isinstance(value, str) and "\n" in value:
+                header, *body = _dump_block_scalar(value, child_pad)
+                lines.append(f"{pad}{key_str}: {header}")
+                lines.extend(body)
             else:
                 lines.append(f"{pad}{key_str}: {_dump_scalar(value)}")
     elif isinstance(data, list):
@@ -275,6 +416,10 @@ def _dump_value(data: Any, level: int) -> list[str]:
                 lines.append(f"{pad}- {{}}")
             elif isinstance(item, list):
                 lines.append(f"{pad}- []")
+            elif isinstance(item, str) and "\n" in item:
+                header, *body = _dump_block_scalar(item, child_pad)
+                lines.append(f"{pad}- {header}")
+                lines.extend(body)
             else:
                 lines.append(f"{pad}- {_dump_scalar(item)}")
     else:
