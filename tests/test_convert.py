@@ -105,6 +105,40 @@ class BlockScalarTests(unittest.TestCase):
         self.assertEqual(parse_yaml(dumped), data)
 
 
+class AnchorAliasTests(unittest.TestCase):
+    def test_scalar_anchor_and_alias(self):
+        text = "base: &b hello\nother: *b\n"
+        self.assertEqual(parse_yaml(text), {"base": "hello", "other": "hello"})
+
+    def test_mapping_anchor_and_alias(self):
+        text = (
+            "defaults: &defaults\n"
+            "  timeout: 30\n"
+            "  retries: 3\n"
+            "service: *defaults\n"
+        )
+        expected = {
+            "defaults": {"timeout": 30, "retries": 3},
+            "service": {"timeout": 30, "retries": 3},
+        }
+        self.assertEqual(parse_yaml(text), expected)
+
+    def test_alias_is_independent_copy(self):
+        text = "defaults: &defaults\n  timeout: 30\nservice: *defaults\n"
+        data = parse_yaml(text)
+        self.assertIsNot(data["defaults"], data["service"])
+        data["service"]["timeout"] = 99
+        self.assertEqual(data["defaults"]["timeout"], 30)
+
+    def test_sequence_anchor_and_alias(self):
+        text = "items:\n  - &first a\n  - *first\n  - b\n"
+        self.assertEqual(parse_yaml(text), {"items": ["a", "a", "b"]})
+
+    def test_undefined_alias_raises(self):
+        with self.assertRaises(ValueError):
+            parse_yaml("a: *missing\n")
+
+
 class ConversionPipelineTests(unittest.TestCase):
     def test_yaml_to_properties_and_back(self):
         yaml_text = "server:\n  host: localhost\n  port: 8080\n"

@@ -1,16 +1,18 @@
 """A parser and dumper for a practical subset of YAML.
 
 Supports block mappings, block sequences, flow lists/maps ([a, b],
-{a: b}), quoted and plain scalars, comments, and literal/folded block
-scalars (| and >, with -/+ chomping indicators). Does not support
-anchors, aliases, multi-document streams, or explicit block scalar
-indentation indicators. That subset covers the vast majority of
-hand-written config files; anything fancier should go through a real
-YAML library.
+{a: b}), quoted and plain scalars, comments, literal/folded block
+scalars (| and >, with -/+ chomping indicators), and anchors/aliases
+(&name / *name) on block-level values. Does not support merge keys
+(<<:), aliases inside flow collections, multi-document streams, or
+explicit block scalar indentation indicators. That subset covers the
+vast majority of hand-written config files; anything fancier should go
+through a real YAML library.
 """
 
 from __future__ import annotations
 
+import copy
 import re
 from typing import Any
 
@@ -21,7 +23,8 @@ def parse_yaml(text: str) -> Any:
     lines = _preprocess(raw_lines)
     if not lines:
         return None
-    value, _ = _parse_block(lines, 0, lines[0][0], raw_lines)
+    anchors: dict[str, Any] = {}
+    value, _ = _parse_block(lines, 0, lines[0][0], raw_lines, anchors)
     return value
 
 
@@ -85,6 +88,8 @@ def _is_seq_item(content: str) -> bool:
 
 
 _BLOCK_SCALAR_RE = re.compile(r"^([|>])([+-]?)$")
+_ANCHOR_RE = re.compile(r"^&(\S+)(?:\s+(.*))?$")
+_ALIAS_RE = re.compile(r"^\*(\S+)$")
 
 
 def _block_scalar_style(rest: str) -> tuple[str, str] | None:
@@ -94,16 +99,45 @@ def _block_scalar_style(rest: str) -> tuple[str, str] | None:
     return match.group(1), match.group(2)
 
 
+def _extract_anchor(rest: str) -> tuple[str | None, str]:
+    """Split a leading `&name` off a value, returning (name, remainder).
+
+    `remainder` is always a suffix of `rest` (only leading whitespace and
+    the anchor token are removed), which matters for the virtual_indent
+    math in _parse_sequence below.
+    """
+    match = _ANCHOR_RE.match(rest)
+    if not match:
+        return None, rest
+    return match.group(1), (match.group(2) or "")
+
+
+def _resolve_alias(anchors: dict[str, Any], name: str) -> Any:
+    if name not in anchors:
+        raise ValueError(f"undefined alias: *{name}")
+    # Deep-copy so each alias use owns an independent structure; otherwise
+    # mutating one occurrence would silently mutate every other occurrence.
+    return copy.deepcopy(anchors[name])
+
+
 def _parse_block(
-    lines: list[tuple[int, str, int]], start: int, indent: int, raw_lines: list[str]
+    lines: list[tuple[int, str, int]],
+    start: int,
+    indent: int,
+    raw_lines: list[str],
+    anchors: dict[str, Any],
 ):
     if _is_seq_item(lines[start][1]):
-        return _parse_sequence(lines, start, indent, raw_lines)
-    return _parse_mapping(lines, start, indent, raw_lines)
+        return _parse_sequence(lines, start, indent, raw_lines, anchors)
+    return _parse_mapping(lines, start, indent, raw_lines, anchors)
 
 
 def _parse_mapping(
-    lines: list[tuple[int, str, int]], start: int, indent: int, raw_lines: list[str]
+    lines: list[tuple[int, str, int]],
+    start: int,
+    indent: int,
+    raw_lines: list[str],
+    anchors: dict[str, Any],
 ):
     result: dict[str, Any] = {}
     i = start
@@ -114,39 +148,53 @@ def _parse_mapping(
             raise ValueError(f"expected 'key: value' at: {content!r}")
         key = _dequote(content[:colon].strip())
         rest = content[colon + 1 :].strip()
+        anchor_name, rest = _extract_anchor(rest)
         style = _block_scalar_style(rest)
         if style is not None:
             value, i = _parse_block_scalar(raw_lines, lines, i, indent, style)
         elif rest == "":
             if i + 1 < len(lines) and lines[i + 1][0] > indent:
-                value, i = _parse_block(lines, i + 1, lines[i + 1][0], raw_lines)
+                value, i = _parse_block(lines, i + 1, lines[i + 1][0], raw_lines, anchors)
             else:
                 value = None
                 i += 1
+        elif _ALIAS_RE.match(rest):
+            value = _resolve_alias(anchors, _ALIAS_RE.match(rest).group(1))
+            i += 1
         else:
             value = _parse_scalar(rest)
             i += 1
+        if anchor_name is not None:
+            anchors[anchor_name] = value
         result[key] = value
     return result, i
 
 
 def _parse_sequence(
-    lines: list[tuple[int, str, int]], start: int, indent: int, raw_lines: list[str]
+    lines: list[tuple[int, str, int]],
+    start: int,
+    indent: int,
+    raw_lines: list[str],
+    anchors: dict[str, Any],
 ):
     items: list[Any] = []
     i = start
     while i < len(lines) and lines[i][0] == indent and _is_seq_item(lines[i][1]):
         content = lines[i][1]
         rest = content[1:].strip()
+        anchor_name, rest = _extract_anchor(rest)
         style = _block_scalar_style(rest)
         if style is not None:
             value, i = _parse_block_scalar(raw_lines, lines, i, indent, style)
         elif rest == "":
             if i + 1 < len(lines) and lines[i + 1][0] > indent:
-                value, i = _parse_block(lines, i + 1, lines[i + 1][0], raw_lines)
+                value, i = _parse_block(lines, i + 1, lines[i + 1][0], raw_lines, anchors)
             else:
                 value = None
                 i += 1
+        elif _ALIAS_RE.match(rest):
+            value = _resolve_alias(anchors, _ALIAS_RE.match(rest).group(1))
+            i += 1
         elif _find_colon(rest) != -1:
             # "- key: value" starts a mapping; deeper-indented lines continue it.
             virtual_indent = indent + (len(content) - len(rest))
@@ -155,11 +203,15 @@ def _parse_sequence(
             while j < len(lines) and lines[j][0] > indent:
                 virtual_lines.append(lines[j])
                 j += 1
-            value, _consumed = _parse_mapping(virtual_lines, 0, virtual_indent, raw_lines)
+            value, _consumed = _parse_mapping(
+                virtual_lines, 0, virtual_indent, raw_lines, anchors
+            )
             i = j
         else:
             value = _parse_scalar(rest)
             i += 1
+        if anchor_name is not None:
+            anchors[anchor_name] = value
         items.append(value)
     return items, i
 

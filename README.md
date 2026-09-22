@@ -14,8 +14,9 @@ direction so you're not stuck picking one format.
 There is no dependency on PyYAML or any other third-party library. The
 project implements its own parser for a practical subset of YAML
 (mappings, sequences, flow lists/maps, quoted and plain scalars,
-comments, and literal/folded block scalars) rather than requiring one;
-anchors, aliases, and multi-document streams are not supported.
+comments, literal/folded block scalars, and anchors/aliases) rather
+than requiring one; merge keys (`<<:`) and multi-document streams are
+not supported.
 
 ## Example
 
@@ -77,8 +78,11 @@ print(dump_properties(flat))
   dicts round-trips through YAML but isn't addressable key-by-key.
 - A comma inside a plain string value will be read back as a list when
   round-tripping through the properties format.
-- No support for YAML anchors, aliases, multi-document streams, or
-  explicit block scalar indentation indicators (e.g. `|2`).
+- Anchors (`&name`) and aliases (`*name`) are only recognized on
+  block-level values (a mapping value or a sequence item), not inside
+  flow collections like `[*name]`. Merge keys (`<<:`) aren't supported.
+- No support for multi-document streams or explicit block scalar
+  indentation indicators (e.g. `|2`).
 
 ## Development
 
