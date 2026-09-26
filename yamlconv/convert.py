@@ -5,11 +5,10 @@ same output, and none of them touch the filesystem. That is what makes
 them easy to unit test and safe to compose (see cli.py for the only
 place that does file I/O).
 
-Lists are treated as opaque leaf values by flatten/unflatten rather than
-being expanded into indexed keys. That keeps the mapping between the two
-formats simple and lossless for the common case (scalar lists like
-`tags: [a, b]`); a list containing nested dicts round-trips fine too, it
-just is not addressable key-by-key the way scalar entries are.
+A list is only expanded into indexed keys (`servers.0.name`) when it
+contains a dict or another list; a list of plain scalars (`tags: [a, b]`)
+stays a single comma-joined leaf, since that is the common case and
+expanding it would make properties files noisier for no benefit.
 """
 
 from __future__ import annotations
@@ -34,6 +33,10 @@ def _flatten_into(node: Any, prefix: str, sep: str, out: dict) -> None:
         for key, value in node.items():
             new_prefix = f"{prefix}{sep}{key}" if prefix else str(key)
             _flatten_into(value, new_prefix, sep, out)
+    elif isinstance(node, list) and any(isinstance(v, (dict, list)) for v in node):
+        for index, value in enumerate(node):
+            new_prefix = f"{prefix}{sep}{index}" if prefix else str(index)
+            _flatten_into(value, new_prefix, sep, out)
     else:
         out[prefix] = node
 
@@ -49,7 +52,28 @@ def unflatten(flat: dict, sep: str = ".") -> dict:
         for part in parts[:-1]:
             node = node.setdefault(part, {})
         node[parts[-1]] = value
-    return root
+    return _delistify(root)
+
+
+def _delistify(node: Any) -> Any:
+    """Turn dicts whose keys are a contiguous "0", "1", ... run back into lists.
+
+    flatten() encodes a list-of-dicts entry as those indices, so this is
+    the exact inverse. It only fires on dicts built by unflatten's own
+    key-splitting loop, so a real config key that happens to be "0" is the
+    one case this misreads as a list index; that trade-off is what makes
+    lists of dicts addressable key-by-key at all.
+    """
+    if not isinstance(node, dict):
+        return node
+    node = {key: _delistify(value) for key, value in node.items()}
+    try:
+        indices = sorted(int(key) for key in node)
+    except ValueError:
+        return node
+    if node and indices == list(range(len(indices))):
+        return [node[str(i)] for i in range(len(indices))]
+    return node
 
 
 def parse_properties(text: str) -> dict:

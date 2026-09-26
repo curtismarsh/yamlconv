@@ -38,6 +38,38 @@ class FlattenUnflattenTests(unittest.TestCase):
     def test_empty_dict_round_trips(self):
         self.assertEqual(unflatten(flatten({})), {})
 
+    def test_list_of_dicts_expands_into_indexed_keys(self):
+        data = {"servers": [{"name": "a", "port": 1}, {"name": "b", "port": 2}]}
+        flat = flatten(data)
+        self.assertEqual(
+            flat,
+            {
+                "servers.0.name": "a",
+                "servers.0.port": 1,
+                "servers.1.name": "b",
+                "servers.1.port": 2,
+            },
+        )
+        self.assertEqual(unflatten(flat), data)
+
+    def test_list_of_scalars_stays_a_single_leaf(self):
+        data = {"tags": ["a", "b"]}
+        flat = flatten(data)
+        self.assertEqual(flat, {"tags": ["a", "b"]})
+        self.assertEqual(unflatten(flat), data)
+
+    def test_nested_list_of_lists_expands_into_indexed_keys(self):
+        data = {"matrix": [[1, 2], [3, 4]]}
+        flat = flatten(data)
+        self.assertEqual(
+            flat, {"matrix.0": [1, 2], "matrix.1": [3, 4]}
+        )
+        self.assertEqual(unflatten(flat), data)
+
+    def test_single_element_list_of_dicts_round_trips(self):
+        data = {"servers": [{"name": "only"}]}
+        self.assertEqual(unflatten(flatten(data)), data)
+
 
 class YamlFormatTests(unittest.TestCase):
     def test_parse_simple_mapping(self):
@@ -150,6 +182,24 @@ class ConversionPipelineTests(unittest.TestCase):
             properties_to_yaml(properties_text),
             "server:\n  host: localhost\n  port: 8080\n",
         )
+
+    def test_yaml_to_properties_and_back_with_list_of_dicts(self):
+        yaml_text = (
+            "servers:\n"
+            "  - name: a\n"
+            "    port: 1\n"
+            "  - name: b\n"
+            "    port: 2\n"
+        )
+        properties_text = yaml_to_properties(yaml_text)
+        self.assertEqual(
+            properties_text,
+            "servers.0.name=a\n"
+            "servers.0.port=1\n"
+            "servers.1.name=b\n"
+            "servers.1.port=2\n",
+        )
+        self.assertEqual(properties_to_yaml(properties_text), yaml_text)
 
 
 if __name__ == "__main__":

@@ -72,10 +72,12 @@ print(dump_properties(flat))
 
 ## Current limitations
 
-- Lists are treated as single leaf values by `flatten`/`unflatten`, not
-  expanded into indexed keys. A list of scalars round-trips through the
-  properties format as a comma-joined value; a list containing nested
-  dicts round-trips through YAML but isn't addressable key-by-key.
+- A list of scalars (`tags: [a, b]`) stays a single comma-joined leaf
+  value in the properties format. A list containing a dict or another
+  list is expanded into indexed keys instead, e.g. `servers.0.name=a`,
+  `servers.1.name=b`, so it's addressable key-by-key like everything
+  else. The trade-off: a real config key that happens to be a bare
+  integer like `"0"` gets misread as a list index on the way back.
 - A comma inside a plain string value will be read back as a list when
   round-tripping through the properties format.
 - Anchors (`&name`) and aliases (`*name`) are only recognized on
