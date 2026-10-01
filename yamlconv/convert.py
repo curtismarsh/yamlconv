@@ -1,4 +1,5 @@
-"""Conversion between nested config data and two textual formats.
+"""Conversion between nested config data and three textual formats
+(YAML, properties, JSON).
 
 Every function here is pure: given the same input it always returns the
 same output, and none of them touch the filesystem. That is what makes
@@ -13,6 +14,7 @@ expanding it would make properties files noisier for no benefit.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from .yaml_format import dump_yaml, parse_yaml
@@ -106,6 +108,41 @@ def properties_to_yaml(properties_text: str, sep: str = ".") -> str:
     """Convert flat properties text into nested YAML text."""
     nested = unflatten(parse_properties(properties_text), sep=sep)
     return dump_yaml(nested)
+
+
+def yaml_to_json(yaml_text: str) -> str:
+    """Convert YAML text into pretty-printed JSON text."""
+    return _dump_json(parse_yaml(yaml_text))
+
+
+def properties_to_json(properties_text: str, sep: str = ".") -> str:
+    """Convert flat properties text into nested JSON text."""
+    return _dump_json(unflatten(parse_properties(properties_text), sep=sep))
+
+
+def json_to_yaml(json_text: str) -> str:
+    """Convert JSON text into YAML text."""
+    return dump_yaml(_load_json(json_text))
+
+
+def json_to_properties(json_text: str, sep: str = ".") -> str:
+    """Convert JSON text into flat properties text."""
+    return dump_properties(flatten(_load_json(json_text), sep=sep))
+
+
+def _dump_json(data: Any) -> str:
+    # An empty YAML document parses to None; emit an empty object so the
+    # output is always a mapping, matching what the other formats produce.
+    if data is None:
+        data = {}
+    return json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+
+
+def _load_json(text: str) -> dict:
+    data = json.loads(text) if text.strip() else {}
+    if not isinstance(data, dict):
+        raise ValueError("top-level JSON value must be an object")
+    return data
 
 
 def _parse_properties_value(raw: str) -> Any:

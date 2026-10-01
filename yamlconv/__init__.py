@@ -8,9 +8,17 @@ from .convert import (
     dump_properties,
     yaml_to_properties,
     properties_to_yaml,
+    yaml_to_json,
+    properties_to_json,
+    json_to_yaml,
+    json_to_properties,
 )
 
 __all__ = [
+    "yaml_to_json",
+    "properties_to_json",
+    "json_to_yaml",
+    "json_to_properties",
     "parse_yaml",
     "dump_yaml",
     "flatten",

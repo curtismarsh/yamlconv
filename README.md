@@ -52,6 +52,10 @@ tags:
   - api
 ```
 
+JSON is supported as a third format. The other directions are
+`yaml-to-json`, `properties-to-json`, `json-to-yaml` and
+`json-to-properties`. JSON input must be an object at the top level.
+
 Pass `-` as the input path to read from stdin, and `--sep` to change the
 key separator used for flattened paths (default `.`).
 

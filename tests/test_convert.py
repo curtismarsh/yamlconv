@@ -1,11 +1,16 @@
+import json
 import unittest
 
 from yamlconv import (
     dump_yaml,
     flatten,
+    json_to_properties,
+    json_to_yaml,
     parse_yaml,
+    properties_to_json,
     properties_to_yaml,
     unflatten,
+    yaml_to_json,
     yaml_to_properties,
 )
 
@@ -200,6 +205,45 @@ class ConversionPipelineTests(unittest.TestCase):
             "servers.1.port=2\n",
         )
         self.assertEqual(properties_to_yaml(properties_text), yaml_text)
+
+
+class JsonTests(unittest.TestCase):
+    def test_yaml_to_json(self):
+        yaml_text = "server:\n  port: 8080\ndebug: true\ntags: [a, b]\n"
+        self.assertEqual(
+            json.loads(yaml_to_json(yaml_text)),
+            {"server": {"port": 8080}, "debug": True, "tags": ["a", "b"]},
+        )
+
+    def test_empty_yaml_gives_empty_object(self):
+        self.assertEqual(json.loads(yaml_to_json("")), {})
+
+    def test_properties_to_json_rebuilds_nesting(self):
+        text = "a.b=1\na.c=x\nservers.0.name=n\n"
+        self.assertEqual(
+            json.loads(properties_to_json(text)),
+            {"a": {"b": 1, "c": "x"}, "servers": [{"name": "n"}]},
+        )
+
+    def test_json_to_properties(self):
+        text = '{"server": {"host": "h", "port": 1}, "tags": ["a", "b"]}'
+        self.assertEqual(
+            json_to_properties(text),
+            "server.host=h\nserver.port=1\ntags=a,b\n",
+        )
+
+    def test_json_to_yaml(self):
+        self.assertEqual(
+            json_to_yaml('{"a": {"b": 1}}'), "a:\n  b: 1\n"
+        )
+
+    def test_json_round_trip_through_yaml(self):
+        data = {"a": {"b": [1, 2]}, "c": "text", "d": None}
+        self.assertEqual(json.loads(yaml_to_json(json_to_yaml(json.dumps(data)))), data)
+
+    def test_non_object_top_level_is_rejected(self):
+        with self.assertRaises(ValueError):
+            json_to_yaml("[1, 2]")
 
 
 if __name__ == "__main__":
